@@ -18,10 +18,9 @@ public class CarController : MonoBehaviour
     [SerializeField] private List<Transform> wheelTransforms = new List<Transform>();
 
     [Space(10)]
-    [Header("Car Drag Variables")]
+    [Header("Car  variables")]
     [SerializeField] private float groundedDrag;
     [SerializeField] private float airDrag;
-
     [Space(10)]
     [Header("Suspension Variables")]
 
@@ -41,13 +40,14 @@ public class CarController : MonoBehaviour
 
     [Tooltip("Factor affecting tire grip; higher values improve traction.")]
     [SerializeField] private float tireGripFactor;
-
+    [SerializeField] private float tireMass;
 
     [Space(10)]
     [Header("Acceleration And Braking Variables")]
 
     [Tooltip("Transform representing the point where acceleration forces are applied.")]
     [SerializeField] private Transform accelerationPoint;
+    [SerializeField] private AnimationCurve powerCurve;
     [SerializeField] private float acceleration = 25f;
     [SerializeField] private float maxSpeed = 100f;
     [SerializeField] private float deceleration = 10f;
@@ -61,6 +61,13 @@ public class CarController : MonoBehaviour
     [Header("Model References")]
     [SerializeField] private List<Transform> wheelModels = new List<Transform>();
     [SerializeField] private float wheelModelRotationSpeed;
+
+    [Space(10)]
+    [Header("Sound Settings")]
+    [SerializeField] private float blendSpeed = 2f;
+    [SerializeField] private float accelerationThreshold = 2f;
+
+
     #endregion
 
     #region PrivateVariables
@@ -78,7 +85,7 @@ public class CarController : MonoBehaviour
         HandleBounceCar();
         ProcessWheelGrounding();
         isGrounded = GroundCheck();
-        Movement();
+        //Movement();
     }
 
     private void Update()
@@ -86,6 +93,7 @@ public class CarController : MonoBehaviour
         GetPlayerInput();
         AdjustDampingForGroundedState();
         SteeringInputAndWheelRotation();
+        HandleSounds();
     }
 
     #endregion
@@ -125,10 +133,26 @@ public class CarController : MonoBehaviour
                 wheelsIsGrounded[i] = 1;
                 ApplySuspension(i, hit);
                 ApplySteering(i);
+                
+                Vector3 accelerationDirection = wheelTransforms[i].forward;
+
+                if(moveInput!=0)
+                {
+                    float carSpeed = Vector3.Dot(carRB.transform.forward, carRB.linearVelocity);
+
+                    float normalizedSpeed = Mathf.Clamp01(Mathf.Abs(carSpeed) / maxSpeed);
+
+
+                    float availableTorque = powerCurve.Evaluate(normalizedSpeed) * moveInput;
+
+                    carRB.AddForceAtPosition(accelerationDirection * availableTorque, wheelTransforms[i].position);
+                }
+
             }
             else
             {
                 wheelsIsGrounded[i] = 0;
+               
             }
         }
     }
@@ -192,7 +216,7 @@ public class CarController : MonoBehaviour
 
         float acceleration = desiredVel / Time.fixedDeltaTime;
 
-        carRB.AddForceAtPosition(carRB.mass * acceleration * steeringDirection, wheelTransforms[i].position);
+        carRB.AddForceAtPosition(tireMass * acceleration * steeringDirection, wheelTransforms[i].position);
     }
 
     /// <summary>
@@ -229,47 +253,7 @@ public class CarController : MonoBehaviour
 
     #endregion
 
-    #region Movement Methods
 
-    /// <summary>
-    /// Handles Acceleration and Deceleration
-    /// </summary>
-    private void Movement()
-    {
-        if (isGrounded)
-        {
-            Acceleration();
-            Deceleration();
-        }
-    }
-
-    /// <summary>
-    /// Applies acceleration force to the car based on player input.
-    /// This method uses the <c>moveInput</c> value to determine the acceleration force 
-    /// applied in the forward direction of the car. The force is calculated by multiplying
-    /// the acceleration scalar with the player’s input and the car's forward direction.
-    /// 
-    /// The acceleration force is applied at the specified <c>accelerationPoint</c>
-    /// to simulate realistic vehicle movement.
-    private void Acceleration()
-    {
-        carRB.AddForceAtPosition(acceleration * moveInput * transform.forward, accelerationPoint.position, ForceMode.Acceleration);
-    }
-
-    /// <summary>
-    /// Applies deceleration force to the car based on player input.
-    /// This method uses the <c>moveInput</c> value to determine the deceleration force 
-    /// applied in the backward direction of the car. The force is calculated by multiplying
-    /// the deceleration scalar with the player’s input and the opposite direction of the car's forward direction.
-    /// 
-    /// The deceleration force is applied at the specified <c>accelerationPoint</c>
-    /// to simulate braking effects on the vehicle.
-    private void Deceleration()
-    {
-        carRB.AddForceAtPosition(deceleration * moveInput * -transform.forward, accelerationPoint.position, ForceMode.Acceleration);
-    }
-
-    #endregion
 
     #region PlayerInput
 
@@ -285,6 +269,9 @@ public class CarController : MonoBehaviour
         moveInput = Input.GetAxis("Vertical");
     }
 
+
+    private float[] wheelRollAngles = new float[4];
+
     /// <summary>
     /// Retrieves the player's input for steering and applies rotation to the front wheels.
     /// This method uses the Unity Input system to get the value from the "Horizontal" axis,
@@ -295,38 +282,54 @@ public class CarController : MonoBehaviour
     /// The calculated rotation is then applied to the local rotation of the front tires
     /// to simulate steering behavior.
     /// </summary>
+    // Track each wheel's cumulative rolling rotation on the X-axis
     private void SteeringInputAndWheelRotation()
     {
         float steerInput = Input.GetAxis("Horizontal");
-
-        // Calculate target steering angle based on input
         float targetAngle = steerAngle * steerInput;
-
-        // Apply steering rotation to the front wheel parents
+        float rotationAmount = moveInput * wheelModelRotationSpeed * Time.deltaTime;
         wheelTransforms[0].localRotation = Quaternion.Euler(0, targetAngle, 0);
         wheelTransforms[1].localRotation = Quaternion.Euler(0, targetAngle, 0);
-
-        // Calculate the rolling rotation based on move input
-        float rotationAmount = moveInput * wheelModelRotationSpeed * Time.deltaTime;
-
-        for (int i = 0; i < 2; i++)
+        for (int i = 0; i < wheelModels.Count; i++)
         {
-            Quaternion steerRotation = Quaternion.Euler(0, targetAngle, 0);
-            Quaternion rollRotation = Quaternion.Euler(rotationAmount, 0, 0);
+            if (i < 2) // Front wheels: Apply both steering and rolling
+            {
+                // Apply the steering rotation based on target angle
+                Quaternion steerRotation = Quaternion.Euler(0, targetAngle, 0);
 
-            // Combine steering and rolling rotations
-            wheelModels[i].localRotation = steerRotation * rollRotation;
-        }
+                // Update and apply the rolling rotation independently
+                wheelRollAngles[i] += rotationAmount;
+                Quaternion rollRotation = Quaternion.Euler(wheelRollAngles[i], 0, 0);
 
-        // Apply only the rolling rotation to the back wheels (wheelModels[2] and wheelModels[3])
-        for (int i = 2; i < wheelModels.Count; i++)
-        {
-            wheelModels[i].Rotate(Vector3.right * rotationAmount, Space.Self);
+                // Combine the steering and rolling rotations
+                wheelModels[i].localRotation = steerRotation * rollRotation;
+            }
+            else // Back wheels: Apply only rolling
+            {
+                // Update and apply the rolling rotation only
+                wheelRollAngles[i] += rotationAmount;
+                wheelModels[i].localRotation = Quaternion.Euler(wheelRollAngles[i], 0, 0);
+            }
         }
     }
 
 
     #endregion
 
+    #region Sound
+    private void HandleSounds()
+    {
+        if (moveInput >= accelerationThreshold || moveInput <= -accelerationThreshold)
+        {
+            AudioManager.Instance.HandleMovingCarSound(blendSpeed);
+
+        }
+        else
+        {
+            AudioManager.Instance.HandleIdleCarSound(blendSpeed);
+
+        }
+    }
+    #endregion
 
 }
